@@ -153,6 +153,16 @@
     .card-mode input:checked::before{transform:translateX(12px)}
     .card-mode input:focus-visible{box-shadow:0 0 0 3px rgba(193,61,131,.18)}
     .spark{display:flex;flex-direction:column;gap:8px;margin-top:6px}
+    .series-chart{margin-top:4px;border:1px solid #efe1e8;border-radius:12px;background:linear-gradient(180deg,#fff,#fffaf5);padding:6px 6px 2px;overflow:hidden}
+    .series-chart svg{display:block;width:100%;height:auto}
+    .series-grid{stroke:#eadfeb;stroke-width:1;stroke-dasharray:3 4}
+    .series-axis{fill:#64748b;font-size:9px;font-family:inherit}
+    .series-line{fill:none;stroke:#0d8a6e;stroke-width:3;stroke-linecap:round;stroke-linejoin:round}
+    .series-area{fill:url(#tourismArea);opacity:.8}
+    .series-dot{fill:#fff;stroke:#0d8a6e;stroke-width:2.5}
+    .series-empty{font-size:12px;color:#64748b;padding:12px 4px}
+    .series-deltas{display:flex;gap:6px;flex-wrap:wrap;margin-top:7px}
+    .series-delta{font-size:10px;color:#475569;background:#f0fbf6;border:1px solid #ccefe0;border-radius:999px;padding:3px 7px}
     .bar-row{display:grid;grid-template-columns:1fr 54px;gap:8px;align-items:center}
     .bar-track{height:12px;background:#ece4d8;border-radius:999px;overflow:hidden}
     .bar-fill{height:100%;border-radius:999px;background:linear-gradient(90deg,var(--brand),#c13d83,var(--warm-2),#f97316)}
@@ -313,6 +323,10 @@
         <div class="insight-view" id="view-pid-types">
           <div class="hero"><h1>Información sobre tipologías de datos</h1></div>
           <div class="insights">
+            <div class="card" id="cardTypesTurTrend">
+              <div class="card-header" onclick="toggleCard('cardTypesTurTrend')"><div class="card-title-wrap"><span class="card-toggle" aria-hidden="true"></span><h3>Evolución de datos turísticos</h3></div></div>
+              <div class="card-body"><div class="series-chart" id="chartTurTrend"></div><div class="series-deltas" id="summaryTurTrend"></div></div>
+            </div>
             <div class="card collapsed" id="cardTypesTurIncrease">
               <div class="card-header" onclick="toggleCard('cardTypesTurIncrease')"><div class="card-title-wrap"><span class="card-toggle" aria-hidden="true"></span><h3>Incremento turístico por CCAA</h3></div></div>
               <div class="card-body"><div class="spark" id="chartTurIncrease"></div><div class="mini-summary" id="summaryTurIncrease"></div></div>
@@ -344,7 +358,7 @@
       })
     });
 
-    const state = { points: [], municipios: [], province:'', municipality:'', table:{ layerId:'', search:'', field:'', sort:'', dir:'asc' } };
+    const state = { points: [], municipios: [], province:'', municipality:'', tourismSeries:null, table:{ layerId:'', search:'', field:'', sort:'', dir:'asc' } };
     const geoLayers = { baseMunicipios:null, puntos:cluster, thematic:[] };
     const layerState = {
       items: [],
@@ -404,6 +418,23 @@
       return Number.isFinite(n) ? n : null;
     }
 
+    function tourismDeltaFromProps(props){
+      const p = props || {};
+      const dates = state.tourismSeries?.dates || [];
+      const firstKey = dates[0] || 'TRIPLETAS_GRAFO 09/07/2026';
+      const lastKey = dates.at(-1) || 'TRIPLETAS_GRAFO 30/07/2026';
+      const first = parseNum(p[firstKey]) ?? parseNum(p['TRIPLETAS_GRAFO 09/07/2026']) ?? 0;
+      const last = parseNum(p[lastKey]) ?? parseNum(p['TRIPLETAS_GRAFO 30/07/2026']) ?? 0;
+      return last - first;
+    }
+
+    function tourismDeltaFromRow(row){
+      const values = row?.values || [];
+      const first = Number(values[0]);
+      const last = Number(values.at(-1));
+      return (Number.isFinite(last) ? last : 0) - (Number.isFinite(first) ? first : 0);
+    }
+
     function bucketize(value, thresholds){
       if (!Number.isFinite(value)) return -1;
       for (let i = thresholds.length - 1; i >= 0; i--) {
@@ -428,9 +459,7 @@
       if (def.id === 'uso') return n(p['Número de Usuarios']) ?? 0;
       if (def.id === 'mods') return n(p['N Usuarios con Acceso']) ?? 0;
       if (def.id === 'tur') {
-        const last = n(p['TRIPLETAS_GRAFO 30/07/2026']) ?? 0;
-        const prev = n(p['TRIPLETAS_GRAFO 09/07/2026']) ?? 0;
-        return last - prev;
+        return tourismDeltaFromProps(p);
       }
       if (def.id === 'non') return n(p['Número de registros']) ?? 0;
       if (def.id === 'gest') return n(p['Número de destinos gestionados']) ?? n(p['N destinos gestionados']) ?? n(p['Número de destinos']) ?? 0;
@@ -1107,6 +1136,67 @@
       if (!entries.length) el.innerHTML = '<div style="font-size:12px;color:#64748b">Sin datos</div>';
     }
 
+    function formatMetric(value){
+      return new Intl.NumberFormat('es-ES', { maximumFractionDigits:0 }).format(value);
+    }
+
+    function renderTourismTrend(){
+      const chart = document.getElementById('chartTurTrend');
+      const summary = document.getElementById('summaryTurTrend');
+      const dataset = state.tourismSeries;
+      if (!chart || !summary || !dataset?.dates?.length || !dataset.rows?.length) {
+        if (chart) chart.innerHTML = '<div class="series-empty">Sin datos temporales</div>';
+        if (summary) summary.innerHTML = '';
+        return;
+      }
+      const totals = dataset.dates.map((_, index) => dataset.rows.reduce((sum, row) => {
+        const value = Number(row.values?.[index]);
+        return Number.isFinite(value) ? sum + value : sum;
+      }, 0));
+      const baseline = totals[0] || 1;
+      const percentages = totals.map(value => ((value / baseline) - 1) * 100);
+      const width = 340, height = 166, left = 35, right = 10, top = 12, bottom = 34;
+      const plotWidth = width - left - right;
+      const plotHeight = height - top - bottom;
+      const minValue = Math.min(...percentages, 0);
+      const maxValue = Math.max(...percentages, 0);
+      const range = Math.max(maxValue - minValue, 1);
+      const yMin = minValue - range * .08;
+      const yMax = maxValue + range * .08;
+      const points = percentages.map((value, index) => {
+        const x = left + (plotWidth * index / Math.max(dataset.dates.length - 1, 1));
+        const y = top + plotHeight - ((value - yMin) / (yMax - yMin)) * plotHeight;
+        return [x, y];
+      });
+      const line = points.map(([x, y]) => `${x},${y}`).join(' ');
+      const area = `${left},${top + plotHeight} ${line} ${points.at(-1)[0]},${top + plotHeight}`;
+      const grid = [0, .5, 1].map(level => {
+        const value = yMin + (yMax - yMin) * level;
+        const y = top + plotHeight - level * plotHeight;
+        const label = `${value > 0 ? '+' : ''}${value.toFixed(0)}%`;
+        return `<line class="series-grid" x1="${left}" y1="${y}" x2="${width - right}" y2="${y}"></line><text class="series-axis" x="${left - 5}" y="${y + 3}" text-anchor="end">${label}</text>`;
+      }).join('');
+      const labels = dataset.dates.map((date, index) => {
+        const [x] = points[index];
+        const dateLabel = String(date).match(/\d{2}\/\d{2}\/\d{4}/)?.[0] || String(date);
+        const axisLabel = dateLabel.split('/').slice(0, 2).join('/');
+        return `<text class="series-axis" x="${x}" y="${height - 10}" text-anchor="middle">${esc(axisLabel)}</text>`;
+      }).join('');
+      const dots = points.map(([x, y], index) => {
+        const percent = percentages[index];
+        const label = `${percent > 0 ? '+' : ''}${percent.toFixed(1)}%`;
+        return `<circle class="series-dot" cx="${x}" cy="${y}" r="4"><title>${esc(dataset.dates[index])}: ${label}</title></circle>`;
+      }).join('');
+      chart.innerHTML = `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Variación porcentual de datos turísticos por fecha"><defs><linearGradient id="tourismArea" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#0d8a6e" stop-opacity=".28"></stop><stop offset="100%" stop-color="#0d8a6e" stop-opacity="0"></stop></linearGradient></defs>${grid}<polygon class="series-area" points="${area}"></polygon><polyline class="series-line" points="${line}"></polyline>${dots}${labels}</svg>`;
+      const deltas = totals.slice(1).map((value, index) => ((value / (totals[index] || 1)) - 1) * 100);
+      summary.innerHTML = deltas.map((delta, index) => {
+        const sign = delta > 0 ? '+' : '';
+        const tone = delta < 0 ? ' style="color:#be123c;background:#fff1f2;border-color:#fecdd3"' : '';
+        const dateLabel = String(dataset.dates[index + 1]).match(/\d{2}\/\d{2}\/\d{4}/)?.[0] || String(dataset.dates[index + 1]);
+        return `<span class="series-delta"${tone}>${esc(dateLabel)}: ${sign}${delta.toFixed(1)}%</span>`;
+      }).join('');
+    }
+
     function topMetricEntries(data, valueFn, labelFn = row => row.name || row.municipio || row.title || 'Sin nombre'){
       return (data || [])
         .map(row => [labelFn(row), Number(valueFn(row) || 0)])
@@ -1204,9 +1294,7 @@
         return parseNum(p['N Usuarios con Acceso']) ?? parseNum(p['Soluciones digitales activas']) ?? numericValues[0] ?? 0;
       }
       if (def.id === 'tur') {
-        const last = parseNum(p['TRIPLETAS_GRAFO 30/07/2026']) ?? parseNum(p['Tripletas Grado 30/07/2026']) ?? 0;
-        const prev = parseNum(p['TRIPLETAS_GRAFO 09/07/2026']) ?? 0;
-        return last - prev;
+        return tourismDeltaFromProps(p);
       }
       if (def.id === 'non') {
         return parseNum(p['Número de registros']) ?? parseNum(p['N registros']) ?? numericValues[0] ?? 0;
@@ -1241,6 +1329,7 @@
     }
 
     function renderInsights(visiblePoints){
+      renderTourismTrend();
       const visibleMunicipalities = state.municipios.filter(featureVisibleInMap);
       const scopePoints = chartScope('types') ? visiblePoints : state.points;
       const scopePois = chartScope('pois') ? visiblePoints : state.points;
@@ -1279,9 +1368,8 @@
       const usoDef = layerState.items.find(d => d.id === 'uso');
       const modsDef = layerState.items.find(d => d.id === 'mods');
       const gestDef = layerState.items.find(d => d.id === 'gest');
-      const turDef = layerState.items.find(d => d.id === 'tur');
       const nonDef = layerState.items.find(d => d.id === 'non');
-      const turFeatures = turDef?.data?.features || [];
+      const tourismRows = state.tourismSeries?.rows || [];
       const nonFeatures = nonDef?.data?.features || [];
       const visibleCines = new Set(
         state.municipios
@@ -1289,11 +1377,10 @@
           .map(f => String(f?.properties?.c_ine || ''))
           .filter(Boolean)
       );
-      const turByCaa = turFeatures.reduce((acc, f) => {
-        const delta = extractNumericMetric(turDef, f.properties || {});
-        const cene = String(f?.properties?.c_ine || '');
-        const muni = state.municipios.find(m => String(m?.properties?.c_ine || '') === cene);
-        const caa = muni?.properties?.n_auton || 'Sin comunidad';
+      const turByCaa = tourismRows.reduce((acc, row) => {
+        const delta = tourismDeltaFromRow(row);
+        const caa = row.caa || 'Sin comunidad';
+        if (caa === 'Sin comunidad') return acc;
         acc[caa] = (acc[caa] || 0) + delta;
         return acc;
       }, {});
@@ -1318,9 +1405,9 @@
         f => !visibleCines.size || visibleCines.has(String(f?.properties?.c_ine || ''))
       );
       const turEntries = topMetricEntries(
-        turFeatures.filter(f => !visibleCines.size || visibleCines.has(String(f?.properties?.c_ine || ''))),
-        f => extractNumericMetric(turDef, f.properties || {}),
-        f => extractFeatureLabel(f.properties)
+        tourismRows.filter(row => !visibleCines.size || (row.c_ine && visibleCines.has(String(row.c_ine)))),
+        tourismDeltaFromRow,
+        row => row.name || 'Sin nombre'
       );
       const nonEntries = topMetricEntries(
         nonFeatures.filter(f => !visibleCines.size || visibleCines.has(String(f?.properties?.c_ine || ''))),
@@ -1408,7 +1495,7 @@
       const defs = getLayerDefs();
       layerState.items = defs;
 
-      const [munData, munCleanData, ptsData, usoData, modsData, turData, nonData, gestData] = await Promise.all([
+      const [munData, munCleanData, ptsData, usoData, modsData, turData, nonData, gestData, tourismSeries] = await Promise.all([
         loadGeoJson(defs[0].url),
         loadGeoJson('./municipios_clean.geojson'),
         loadGeoJson(defs[1].url),
@@ -1416,8 +1503,10 @@
         loadGeoJson(defs[3].url),
         loadGeoJson(defs[4].url),
         loadGeoJson(defs[5].url),
-        loadGeoJson(defs[6].url)
+        loadGeoJson(defs[6].url),
+        loadGeoJson('./assets/datos-turisticos-series.json')
       ]);
+      state.tourismSeries = tourismSeries;
       defs[2].data = usoData;
       defs[3].data = modsData;
       defs[4].data = turData;
